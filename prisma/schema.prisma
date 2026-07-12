@@ -1,0 +1,573 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ORGANIZATION_OWNER
+  ADMIN
+  FINANCE_MANAGER
+  ENGINEERING_MANAGER
+  IT_ADMIN
+  ANALYST_VIEWER
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  TRIAL
+  PENDING_CANCELLATION
+  CANCELLED
+  EXPIRED
+  UNKNOWN
+}
+
+enum BillingInterval {
+  MONTHLY
+  ANNUAL
+  QUARTERLY
+  USAGE_BASED
+  CUSTOM
+}
+
+enum SourceType {
+  MANUAL
+  IMPORT
+  CSV_SUBSCRIPTIONS
+  CSV_INVOICES
+  CSV_USAGE
+  CSV_LICENSES
+  INTEGRATION_SYNC
+  INVOICE_PDF
+  OCR_EXTRACTION
+}
+
+enum PricingModel {
+  FLAT_SUBSCRIPTION
+  PER_SEAT
+  PER_ACTIVE_USER
+  TIERED_USAGE
+  METERED_USAGE
+  VOLUME_BASED
+  HYBRID
+  CUSTOM_CONTRACT
+}
+
+enum SeatStatus {
+  ASSIGNED
+  UNASSIGNED
+  SUSPENDED
+  UNKNOWN
+}
+
+enum InvoiceStatus {
+  PENDING
+  PAID
+  OVERDUE
+  VOID
+  DISPUTED
+  UNKNOWN
+}
+
+enum ConnectionStatus {
+  ACTIVE
+  DISCONNECTED
+  ERROR
+  PENDING_SETUP
+}
+
+enum ImportJobStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  COMPLETED_WITH_ERRORS
+  FAILED
+  CANCELLED
+}
+
+enum CostType {
+  ACTUAL_INVOICE
+  FORECAST
+  ESTIMATED_MONTHLY
+  DERIVED
+}
+
+enum RecommendationStatus {
+  NEW
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  IN_PROGRESS
+  IMPLEMENTED
+  VERIFIED
+  NOT_REALIZED
+  DEFERRED
+}
+
+enum Priority {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum Confidence {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum DiscrepancyStatus {
+  DETECTED
+  UNDER_REVIEW
+  RESOLVED
+  DISMISSED
+}
+
+model Organization {
+  id              String   @id @default(uuid())
+  name            String
+  defaultCurrency String   @default("USD")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  memberships               OrganizationMembership[]
+  vendors                   Vendor[]
+  subscriptions             Subscription[]
+  licenseAssignments        LicenseAssignment[]
+  usageRecords              UsageRecord[]
+  invoices                  Invoice[]
+  integrationConnections    IntegrationConnection[]
+  importJobs                ImportJob[]
+  normalizedCostRecords     NormalizedCostRecord[]
+  recommendations           Recommendation[]
+  auditLogs                 AuditLog[]
+  discrepancies             ReconciliationDiscrepancy[]
+
+  @@map("organizations")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships      OrganizationMembership[]
+  subscriptions    Subscription[]          @relation("SubscriptionOwner")
+  importJobs       ImportJob[]             @relation("ImportCreatedBy")
+  outcomesVerified RecommendationOutcome[] @relation("OutcomeVerifiedBy")
+  auditLogs        AuditLog[]              @relation("UserAuditLogs")
+
+  @@map("users")
+}
+
+model OrganizationMembership {
+  id             String       @id @default(uuid())
+  organizationId String
+  userId         String
+  role           Role         @default(ANALYST_VIEWER)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("organization_memberships")
+}
+
+model Vendor {
+  id              String   @id @default(uuid())
+  organizationId  String
+  name            String
+  category        String   // AI API Provider, Developer Tools, Productivity Software, Cloud Infrastructure, Security, etc.
+  website         String?
+  billingCurrency String   @default("USD")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organization          Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscriptions         Subscription[]
+  planPricingTerms      PlanPricingTerms[]
+  usageRecords          UsageRecord[]
+  invoices              Invoice[]
+  normalizedCostRecords NormalizedCostRecord[]
+
+  @@index([organizationId])
+  @@index([name])
+  @@map("vendors")
+}
+
+model Subscription {
+  id              String             @id @default(uuid())
+  organizationId  String
+  vendorId        String
+  productName     String
+  planName        String
+  billingInterval BillingInterval    @default(MONTHLY)
+  billingCurrency String             @default("USD")
+  expectedAmount  Decimal            @default(0) @db.Decimal(14, 4)
+  billingStartAt  DateTime?
+  renewalAt       DateTime?
+  contractEndAt   DateTime?
+  seatQuantity    Int?
+  ownerId         String?
+  status          SubscriptionStatus @default(ACTIVE)
+  sourceType      SourceType         @default(MANUAL)
+  sourceReference String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  organization          Organization                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  vendor                Vendor                      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  owner                 User?                       @relation("SubscriptionOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  licenses              LicenseAssignment[]
+  usageRecords          UsageRecord[]
+  invoiceLineItems      InvoiceLineItem[]
+  normalizedCostRecords NormalizedCostRecord[]
+  discrepancies         ReconciliationDiscrepancy[]
+
+  @@index([organizationId])
+  @@index([vendorId])
+  @@index([status])
+  @@index([renewalAt])
+  @@map("subscriptions")
+}
+
+model PlanPricingTerms {
+  id              String       @id @default(uuid())
+  vendorId        String
+  productName     String
+  planName        String
+  currency        String       @default("USD")
+  pricingModel    PricingModel @default(FLAT_SUBSCRIPTION)
+  baseFee         Decimal      @default(0) @db.Decimal(14, 4)
+  includedSeats   Int?
+  seatPrice       Decimal?     @db.Decimal(14, 4)
+  includedUsage   Decimal?     @db.Decimal(14, 4)
+  overageRate     Decimal?     @db.Decimal(14, 4)
+  billingInterval String       @default("monthly")
+  effectiveFrom   DateTime?
+  effectiveTo     DateTime?
+  sourceReference String?
+  verifiedAt      DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  vendor          Vendor       @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId])
+  @@index([productName, planName])
+  @@map("plan_pricing_terms")
+}
+
+model LicenseAssignment {
+  id               String       @id @default(uuid())
+  organizationId   String
+  subscriptionId   String
+  internalUserId   String?
+  externalIdentity String       // e.g. user email or vendor license id
+  seatStatus       SeatStatus   @default(ASSIGNED)
+  assignedAt       DateTime?
+  lastActivityAt   DateTime?
+  sourceReference  String?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscription     Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([subscriptionId])
+  @@index([seatStatus])
+  @@map("license_assignments")
+}
+
+model UsageRecord {
+  id                String       @id @default(uuid())
+  organizationId    String
+  vendorId          String
+  subscriptionId    String?
+  metricName        String       // input_tokens, output_tokens, cached_tokens, api_requests, compute_units, storage_gb
+  quantity          Decimal      @db.Decimal(14, 4)
+  unit              String       // tokens, requests, GB, hours
+  usageStartAt      DateTime
+  usageEndAt        DateTime
+  currency          String?      @default("USD")
+  reportedCost      Decimal?     @db.Decimal(14, 4)
+  modelIdentifier   String?      // gpt-4o, claude-3-5-sonnet, gemini-1.5-pro
+  projectIdentifier String?      // internal-agent, customer-portal
+  sourceReference   String?
+  ingestedAt        DateTime     @default(now())
+  metadata          Json?
+
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  vendor            Vendor       @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  subscription      Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([vendorId])
+  @@index([subscriptionId])
+  @@index([metricName])
+  @@index([usageStartAt, usageEndAt])
+  @@map("usage_records")
+}
+
+model Invoice {
+  id                 String            @id @default(uuid())
+  organizationId     String
+  vendorId           String
+  invoiceNumber      String
+  currency           String            @default("USD")
+  subtotal           Decimal           @default(0) @db.Decimal(14, 4)
+  tax                Decimal           @default(0) @db.Decimal(14, 4)
+  total              Decimal           @default(0) @db.Decimal(14, 4)
+  invoiceDate        DateTime
+  billingPeriodStart DateTime?
+  billingPeriodEnd   DateTime?
+  dueAt              DateTime?
+  status             InvoiceStatus     @default(PAID)
+  sourceType         SourceType        @default(MANUAL)
+  sourceReference    String?
+  fileReference      String?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  organization          Organization                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  vendor                Vendor                      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  lineItems             InvoiceLineItem[]
+  normalizedCostRecords NormalizedCostRecord[]
+  discrepancies         ReconciliationDiscrepancy[]
+
+  @@unique([organizationId, vendorId, invoiceNumber])
+  @@index([organizationId])
+  @@index([vendorId])
+  @@index([invoiceDate])
+  @@map("invoices")
+}
+
+model InvoiceLineItem {
+  id                  String        @id @default(uuid())
+  invoiceId           String
+  description         String
+  quantity            Decimal?      @db.Decimal(14, 4)
+  unitPrice           Decimal?      @db.Decimal(14, 4)
+  amount              Decimal       @db.Decimal(14, 4)
+  currency            String        @default("USD")
+  subscriptionId      String?
+  classification      String?
+  confidence          Decimal?      @db.Decimal(5, 2)
+  sourceTextReference String?
+  createdAt           DateTime      @default(now())
+
+  invoice             Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  subscription        Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+
+  @@index([invoiceId])
+  @@index([subscriptionId])
+  @@map("invoice_line_items")
+}
+
+model IntegrationConnection {
+  id                   String           @id @default(uuid())
+  organizationId       String
+  provider             String           // OPENAI, ANTHROPIC, AWS, GOOGLE_CLOUD, GITHUB, SLACK, GOOGLE_WORKSPACE
+  connectionStatus     ConnectionStatus @default(PENDING_SETUP)
+  credentialReference  String?          // Key reference or KMS id, never raw plain secret
+  encryptedCredentials String?          // Encrypted server-side payload
+  lastSuccessfulSyncAt DateTime?
+  lastAttemptAt        DateTime?
+  errorCode            String?
+  errorMessage         String?
+  syncMetadata         Json?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  organization         Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, provider])
+  @@index([organizationId])
+  @@map("integration_connections")
+}
+
+model ImportJob {
+  id               String          @id @default(uuid())
+  organizationId   String
+  sourceType       SourceType
+  status           ImportJobStatus @default(QUEUED)
+  fileReference    String?
+  originalFileName String?
+  rowCount         Int             @default(0)
+  acceptedCount    Int             @default(0)
+  rejectedCount    Int             @default(0)
+  duplicateCount   Int             @default(0)
+  errorSummary     Json?
+  stagingData      Json?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdById      String?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  organization     Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy        User?           @relation("ImportCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([status])
+  @@map("import_jobs")
+}
+
+model NormalizedCostRecord {
+  id                     String       @id @default(uuid())
+  organizationId         String
+  vendorId               String
+  subscriptionId         String?
+  invoiceId              String?
+  amount                 Decimal      @db.Decimal(14, 4)
+  currency               String       @default("USD")
+  normalizedMonthlyAmount Decimal      @db.Decimal(14, 4)
+  costCategory           String
+  periodStart            DateTime
+  periodEnd              DateTime
+  costType               CostType     @default(ACTUAL_INVOICE)
+  sourceRecordId         String?
+  normalizedAt           DateTime     @default(now())
+
+  organization           Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  vendor                 Vendor       @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  subscription           Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  invoice                Invoice?     @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([vendorId])
+  @@index([subscriptionId])
+  @@index([periodStart, periodEnd])
+  @@index([costType])
+  @@map("normalized_cost_records")
+}
+
+model Recommendation {
+  id                   String               @id @default(uuid())
+  organizationId       String
+  recommendationType   String               // UNASSIGNED_SEATS, INACTIVE_SEATS, DUPLICATE_SUBSCRIPTION, CAPABILITY_OVERLAP, PRICING_PLAN_OPTIMIZATION, RENEWAL_REVIEW, INVOICE_DISCREPANCY, AI_SPEND_BUDGET
+  title                String
+  description          String
+  status               RecommendationStatus @default(NEW)
+  priority             Priority             @default(MEDIUM)
+  estimatedSavings     Decimal              @db.Decimal(14, 4)
+  savingsCurrency      String               @default("USD")
+  confidence           Confidence           @default(HIGH)
+  evidenceReferences   Json                 // Structured list of source records and signals
+  assumptions          Json                 // Pricing assumptions, billing interval, seat count
+  modelOrRuleVersion   String               @default("rules-v1.0")
+  assignedToId         String?
+  reviewNotes          String?
+  vendorId             String?
+  subscriptionId       String?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  organization         Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  outcomes             RecommendationOutcome[]
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([priority])
+  @@index([recommendationType])
+  @@map("recommendations")
+}
+
+model RecommendationOutcome {
+  id                 String         @id @default(uuid())
+  recommendationId   String
+  actionTaken        String
+  implementationDate DateTime
+  baselineAmount     Decimal        @db.Decimal(14, 4)
+  actualAmountAfter  Decimal        @db.Decimal(14, 4)
+  realizedSavings    Decimal        @db.Decimal(14, 4)
+  currency           String         @default("USD")
+  verificationMethod String
+  evidenceReference  String
+  verifiedById       String
+  verifiedAt         DateTime       @default(now())
+  notes              String?
+  createdAt          DateTime       @default(now())
+
+  recommendation     Recommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+  verifiedBy         User           @relation("OutcomeVerifiedBy", fields: [verifiedById], references: [id])
+
+  @@index([recommendationId])
+  @@index([verifiedById])
+  @@map("recommendation_outcomes")
+}
+
+model ReconciliationDiscrepancy {
+  id               String            @id @default(uuid())
+  organizationId   String
+  invoiceId        String?
+  subscriptionId   String?
+  vendorName       String
+  discrepancyType  String            // AMOUNT_MISMATCH, UNEXPECTED_PRICE_HIKE, POST_CANCELLATION_CHARGE, UNMATCHED_SUBSCRIPTION, TAX_DISCREPANCY, LINE_ITEM_SUM_MISMATCH
+  expectedAmount   Decimal?          @db.Decimal(14, 4)
+  observedAmount   Decimal           @db.Decimal(14, 4)
+  differenceAmount Decimal           @db.Decimal(14, 4)
+  currency         String            @default("USD")
+  status           DiscrepancyStatus @default(DETECTED)
+  notes            String?
+  resolvedAt       DateTime?
+  resolvedById     String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invoice          Invoice?          @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  subscription     Subscription?     @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([discrepancyType])
+  @@map("reconciliation_discrepancies")
+}
+
+model ExchangeRate {
+  id            String   @id @default(uuid())
+  fromCurrency  String
+  toCurrency    String
+  rate          Decimal  @db.Decimal(14, 6)
+  effectiveDate DateTime
+  source        String   @default("ECB_OPEN_EXCHANGE")
+  createdAt     DateTime @default(now())
+
+  @@unique([fromCurrency, toCurrency, effectiveDate])
+  @@index([fromCurrency, toCurrency])
+  @@map("exchange_rates")
+}
+
+model AuditLog {
+  id             String       @id @default(uuid())
+  organizationId String
+  userId         String?
+  action         String       // SUBSCRIPTION_CREATED, INVOICE_IMPORTED, RECOMMENDATION_APPROVED, etc.
+  entityType     String       // Subscription, Invoice, Recommendation, etc.
+  entityId       String
+  details        Json?
+  ipAddress      String?
+  createdAt      DateTime     @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User?        @relation("UserAuditLogs", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([userId])
+  @@index([action])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
