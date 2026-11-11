@@ -5,9 +5,19 @@ import { Role } from "@prisma/client";
 import { Permission, hasPermission } from "./rbac";
 import prisma from "../prisma";
 
-const SECRET = new TextEncoder().encode(
-  process.env.APP_SECRET || "trim-platform-default-secret-key-32-chars-long!!"
-);
+const DEV_FALLBACK_SECRET = "trim-platform-default-secret-key-32-chars-long!!";
+
+// The fallback only applies outside production (local dev and tests).
+function getSigningSecret(): Uint8Array {
+  const secret = process.env.APP_SECRET;
+  if (!secret) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("APP_SECRET must be set in production");
+    }
+    return new TextEncoder().encode(DEV_FALLBACK_SECRET);
+  }
+  return new TextEncoder().encode(secret);
+}
 
 export interface SessionPayload {
   userId: string;
@@ -30,12 +40,12 @@ export async function createSessionToken(payload: SessionPayload): Promise<strin
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime("7d")
-    .sign(SECRET);
+    .sign(getSigningSecret());
 }
 
 export async function verifySessionToken(token: string): Promise<SessionPayload | null> {
   try {
-    const { payload } = await jwtVerify(token, SECRET);
+    const { payload } = await jwtVerify(token, getSigningSecret());
     return payload as unknown as SessionPayload;
   } catch {
     return null;
